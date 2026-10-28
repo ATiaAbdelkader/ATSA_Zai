@@ -1,0 +1,82 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // ===============================================================
+    // Storage security policy for ATSA
+    // ---------------------------------------------------------------
+    // Microscopy videos and snapshots can contain identifiable visual
+    // information (slide labels, patient IDs). All uploads MUST be
+    // namespaced under the authenticated user's UID and only the
+    // owning user (or an admin) may read/write/delete.
+    //
+    // Permitted path layout:
+    //   videos/{uid}/{fileName}
+    //   snapshots/{uid}/{fileName}
+    //   reports/{uid}/{fileName}
+    //
+    // Legacy public-path uploads (e.g. "videos/{fileName}") are
+    // explicitly denied.
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isAuthenticated() && request.auth.uid == uid;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (request.auth.token.email == "atia.abdelkader@gmail.com" ||
+         firestore.exists(/databases/(default)/documents/users/$(request.auth.uid)));
+    }
+
+    function isAuthorized(uid) {
+      return isAuthenticated() && (request.auth.uid == uid || isAdmin());
+    }
+
+    function isValidUploadPath() {
+      // Only allow namespaced paths; block root-level uploads entirely.
+      return request.resource.name.matches('^(videos|snapshots|reports)/[^/]+/.+');
+    }
+
+    function isValidVideoMetadata() {
+      return request.resource.contentType.matches('video/.*') &&
+             request.resource.size < 200 * 1024 * 1024; // 200 MB cap
+    }
+
+    function isValidImageMetadata() {
+      return request.resource.contentType.matches('image/.*') &&
+             request.resource.size < 25 * 1024 * 1024; // 25 MB cap
+    }
+
+    // Per-user namespaced uploads. {uid} segment MUST equal auth.uid.
+    match /videos/{uid}/{fileName=**} {
+      allow read: if isAuthorized(uid);
+      allow create: if isOwner(uid) && isValidVideoMetadata();
+      allow update: if isOwner(uid) && isValidVideoMetadata();
+      allow delete: if isAuthorized(uid);
+    }
+
+    match /snapshots/{uid}/{fileName=**} {
+      allow read: if isAuthorized(uid);
+      allow create: if isOwner(uid) && isValidImageMetadata();
+      allow update: if isOwner(uid) && isValidImageMetadata();
+      allow delete: if isAuthorized(uid);
+    }
+
+    match /reports/{uid}/{fileName=**} {
+      allow read: if isAuthorized(uid);
+      allow create: if isOwner(uid)
+                    && request.resource.contentType.matches('(application/pdf|image/.*|application/json)');
+      allow update: if isOwner(uid);
+      allow delete: if isAuthorized(uid);
+    }
+
+    // Default-deny anything else (legacy root-level paths, etc).
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

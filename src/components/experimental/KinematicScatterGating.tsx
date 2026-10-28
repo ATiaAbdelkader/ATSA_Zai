@@ -26,8 +26,8 @@ import {
   Maximize2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { cn } from '../utils';
-import type { SpermData, AnalysisResult } from '../types';
+import { cn } from '../../utils';
+import type { SpermData, AnalysisResult } from '../../types';
 
 interface KinematicScatterGatingProps {
   spermatozoa: SpermData[];

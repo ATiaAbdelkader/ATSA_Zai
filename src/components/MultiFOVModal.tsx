@@ -16,6 +16,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../utils';
 import type { FieldOfViewData, MultiFOVComposite } from '../types';
 import { calculateMultiFOVComposite } from '../services/casaService';
+import { toJSDate } from '../lib/date-utils';
 
 interface MultiFOVModalProps {
   isOpen: boolean;
@@ -214,7 +215,8 @@ export const MultiFOVModal: React.FC<MultiFOVModalProps> = ({
                         <div className="flex items-center gap-2">
                           <span className="text-xs font-bold font-mono">Field {f.fieldIndex}</span>
                           <span className={cn("text-[8px] font-mono", isDark ? "text-white/30" : "text-slate-400")}>
-                            {new Date(f.timestamp).toLocaleTimeString()}
+                            {/* H7 fix: toJSDate handles Firestore Timestamp objects. */}
+                            {(() => { const fd = toJSDate(f.timestamp); return fd ? fd.toLocaleTimeString() : ''; })()}
                           </span>
                         </div>
                         <p className={cn("text-[10px]", isDark ? "text-white/50" : "text-slate-500")}>

@@ -16,8 +16,8 @@ import {
   Edit3
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { cn } from '../utils';
-import type { SpermData } from '../types';
+import { cn } from '../../utils';
+import type { SpermData } from '../../types';
 
 interface MorphologyGalleryProps {
   spermatozoa: SpermData[];

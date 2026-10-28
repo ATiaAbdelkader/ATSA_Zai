@@ -56,35 +56,22 @@ import { CountUpNumber } from './components/CountUpNumber';
 import { VIRTUAL_ANIMALS, VIRTUAL_ANIMAL_KEYS } from './data/virtualAnimalDatasets';
 import type { AppState, SpeciesProfile } from './types';
 import { auth, db, googleProvider } from './firebase';
-import { signInWithPopup, onAuthStateChanged, signOut, User } from 'firebase/auth';
+import { signInWithPopup, onAuthStateChanged, signOut, signInAnonymously, User } from 'firebase/auth';
 import { collection, addDoc, query, where, orderBy, limit, onSnapshot, Timestamp, doc, updateDoc, deleteDoc } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from './lib/firestore-utils';
 import { useLanguage } from './context/LanguageContext';
+import { safeStorage } from './lib/safe-storage';
+import { toJSDate, formatDateTime, timeAgo } from './lib/date-utils';
 
 export default function App() {
   const { language, setLanguage, t, dir } = useLanguage();
-  
-  const LanguageSelect = () => {
-    return (
-      <div className="flex items-center gap-1 p-1 bg-black/10 dark:bg-white/5 rounded-2xl border border-black/5 dark:border-white/[0.05]">
-        {(['en', 'fr', 'ar'] as const).map((lang) => (
-          <button
-            key={lang}
-            type="button"
-            onClick={() => setLanguage(lang)}
-            className={cn(
-              "px-3 py-1.5 text-[10px] font-black rounded-xl uppercase tracking-wider transition-all cursor-pointer",
-              language === lang 
-                ? "bg-gradient-to-r from-emerald-500 to-teal-500 text-white shadow-lg shadow-emerald-500/15" 
-                : "text-slate-400 hover:text-slate-900 dark:hover:text-white"
-            )}
-          >
-            {lang}
-          </button>
-        ))}
-      </div>
-    );
-  };
+
+  // H11 fix: LanguageSelect is now defined at MODULE SCOPE (see bottom of
+  // file). Previously it was declared inside the App component, which made
+  // React treat it as a NEW component type on every render — causing the
+  // entire subtree to unmount + remount on each parent state change and
+  // lose focus / scroll / internal state.
+  // <LanguageSelect /> now reads its own context via useLanguage().
 
   const [appState, setAppState] = useState<AppState>('landing');
   const [isRegModalOpen, setIsRegModalOpen] = useState(false);
@@ -92,12 +79,14 @@ export default function App() {
   const [activePatient, setActivePatient] = useState<{ id: string; species: string; profile: SpeciesProfile } | null>(null);
   const [analysisInitialAction, setAnalysisInitialAction] = useState<'camera' | 'upload' | null>(null);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    const saved = localStorage.getItem('theme');
+    // H8 fix: use safeStorage so Safari private-mode / storage-disabled
+    // iframes don't crash the first render.
+    const saved = safeStorage.get('theme');
     return (saved === 'light' || saved === 'dark') ? saved : 'dark';
   });
 
   useEffect(() => {
-    localStorage.setItem('theme', theme);
+    safeStorage.set('theme', theme);
   }, [theme]);
   const [recentAnalyses, setRecentAnalyses] = useState<any[]>([]);
   const [recent30DaysAnalyses, setRecent30DaysAnalyses] = useState<any[]>([]);
@@ -146,17 +135,14 @@ export default function App() {
     }
 
     // Accumulate actual sample metrics from firestore
+    // H7 fix: use toJSDate so Firestore Timestamp objects (.toDate())
+    // AND plain strings both parse correctly. The previous "duck-type"
+    // branch below failed silently if .toDate was missing.
     recent30DaysAnalyses.forEach(analysis => {
       if (!analysis.timestamp) return;
-      let dateObj: Date;
-      if (typeof analysis.timestamp === 'string') {
-        dateObj = new Date(analysis.timestamp);
-      } else if (analysis.timestamp.toDate) {
-        dateObj = analysis.timestamp.toDate();
-      } else {
-        dateObj = new Date(analysis.timestamp);
-      }
-      
+      const dateObj = toJSDate(analysis.timestamp);
+      if (!dateObj) return;
+
       const dateKey = dateObj.toISOString().split('T')[0];
       if (dates[dateKey] !== undefined) {
         dates[dateKey].sum += analysis.concentration || 0;
@@ -192,23 +178,17 @@ export default function App() {
   })();
 
   useEffect(() => {
+    // Firebase Auth now handles ALL session persistence (including the
+    // former "guest" flow, which uses signInAnonymously). No localStorage
+    // fallback is needed or wanted — relying on it would re-introduce a
+    // security hole where unauthenticated mock UIDs bypass Firestore rules.
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       if (currentUser) {
         setUser(currentUser);
         setAppState('dashboard');
       } else {
-        const savedGuest = localStorage.getItem('atsa_guest_session');
-        if (savedGuest) {
-          try {
-            const parsed = JSON.parse(savedGuest);
-            setUser(parsed);
-            setAppState('dashboard');
-          } catch (e) {
-            setAppState('landing');
-          }
-        } else {
-          setAppState('landing');
-        }
+        setUser(null);
+        setAppState('landing');
       }
     });
     return () => unsubscribe();
@@ -304,7 +284,9 @@ export default function App() {
       
       pdf.setFontSize(9);
       pdf.setTextColor(100);
-      pdf.text(`Date: ${new Date(row.timestamp).toLocaleString()}`, 140, y);
+      // H7 fix: toJSDate handles Firestore Timestamp objects too.
+      const rowDate = toJSDate(row.timestamp);
+      pdf.text(`Date: ${rowDate ? rowDate.toLocaleString() : 'N/A'}`, 140, y);
       
       y += 7;
       pdf.text(`Concentration: ${row.concentration?.toFixed(1)} M/ml`, 25, y);
@@ -365,8 +347,12 @@ export default function App() {
     pdf.setFont('helvetica', 'normal');
     pdf.text(`Patient ID: ${row.patientId || 'N/A'}`, 25, 68);
     pdf.text(`Species Group: ${row.species || 'N/A'}`, 25, 76);
-    pdf.text(`Analysis Timestamp: ${row.timestamp ? new Date(row.timestamp).toLocaleString() : 'N/A'}`, 100, 68);
-    pdf.text(`Diagnostic Protocol: WHO 2010 Standard`, 100, 76);
+    // H7 fix: toJSDate handles Firestore Timestamp objects too.
+    const analysisDate = toJSDate(row.timestamp);
+    pdf.text(`Analysis Timestamp: ${analysisDate ? analysisDate.toLocaleString() : 'N/A'}`, 100, 68);
+    // L5 fix: was hardcoded "WHO 2010 Standard" regardless of the actual
+    // edition used for the analysis. Read from row.whoEdition, default to 6th.
+    pdf.text(`Diagnostic Protocol: WHO ${row.whoEdition || '6th'} Standard`, 100, 76);
     
     // Core Diagnostic Metrics Table
     pdf.setFontSize(12);
@@ -456,10 +442,16 @@ export default function App() {
     pdf.setTextColor(50, 50, 50);
     pdf.setFont('helvetica', 'normal');
     
-    const interpretationText = row.interpretation?.recommendation || 
-      (row.interpretation?.status === 'normal' 
-        ? "Sample indicates high-quality and viable characteristics. All measured parameters satisfy clinical standards for breeding and cryopreservation." 
-        : "Parameters exhibit suboptimal scores in multiple fields. Clinical consultation or treatment protocols are recommended.");
+    // C5 fix: the AnalysisResult type has `recommendations: string[]`
+    // (plural), never `recommendation` (singular). The previous read
+    // always returned undefined, so users never saw the actual clinical
+    // recommendations on this PDF report.
+    const recs = row.interpretation?.recommendations;
+    const interpretationText = (Array.isArray(recs) && recs.length > 0)
+      ? recs.map(r => `• ${r}`).join('\n')
+      : (row.interpretation?.status === 'normal'
+          ? "Sample indicates high-quality and viable characteristics. All measured parameters satisfy clinical standards for breeding and cryopreservation."
+          : "Parameters exhibit suboptimal scores in multiple fields. Clinical consultation or treatment protocols are recommended.");
     
     // Split text into lines to avoid overflow
     const splitText = pdf.splitTextToSize(interpretationText, 170);
@@ -472,7 +464,10 @@ export default function App() {
     // Validation Footer Signature Line
     pdf.setFontSize(8);
     pdf.setTextColor(130, 135, 140);
-    pdf.text('VALIDATOR: Abdelkader Atia, App Architect & Lead Designer', 15, 260);
+    // L6 fix: was hardcoded "Abdelkader Atia" — now uses the signed-in
+    // user's displayName, falling back to a generic lab attribution.
+    const validatorName = user?.displayName || user?.email || 'ATSA Lab';
+    pdf.text(`VALIDATOR: ${validatorName}`, 15, 260);
     pdf.text('SIGNATURE: OFFICIAL ATSA CRYPTO VERIFIED SIGN-OFF', 15, 265);
     
     pdf.setDrawColor(200, 205, 210);
@@ -563,27 +558,25 @@ export default function App() {
     }
   };
 
-  const handleGuestLogin = () => {
-    const mockUser = {
-      uid: "jury_guest_pass",
-      email: "jury@atsa-conference.org",
-      displayName: "Conference Jury Member",
-      photoURL: null
-    } as User;
-    setUser(mockUser);
-    localStorage.setItem('atsa_guest_session', JSON.stringify(mockUser));
-    setAppState('dashboard');
+  // Guest login now uses Firebase Anonymous Auth, which gives the user a
+  // real UID that Firestore rules can check against the per-document `uid`
+  // field. The previous mock-user approach bypassed Firestore security.
+  const handleGuestLogin = async () => {
+    try {
+      await signInAnonymously(auth);
+      // onAuthStateChanged listener will set user + transition to dashboard.
+    } catch (error) {
+      console.error("Anonymous login failed:", error);
+    }
   };
 
   const handleLogout = async () => {
     try {
-      localStorage.removeItem('atsa_guest_session');
       await signOut(auth);
       setUser(null);
       setAppState('landing');
     } catch (error) {
       console.error("Logout failed:", error);
-      localStorage.removeItem('atsa_guest_session');
       setUser(null);
       setAppState('landing');
     }
@@ -600,6 +593,7 @@ export default function App() {
         species: data.species,
         collectionTime: data.collectionTime,
         abstinenceDays: data.abstinenceDays,
+        preparationMethod: data.preparationMethod,  // M16 fix: now persisted (was dropped before).
         notes: data.notes,
         uid: user.uid,
         timestamp: Timestamp.now()
@@ -1069,7 +1063,8 @@ export default function App() {
                                 <p className={cn("text-sm font-semibold leading-tight", theme === 'dark' ? "text-white" : "text-slate-900")}>{n.title}</p>
                                 <p className={cn("text-xs leading-relaxed", theme === 'dark' ? "text-white/40" : "text-slate-500")}>{n.message}</p>
                                 <p className={cn("text-[10px] font-medium", theme === 'dark' ? "text-white/20" : "text-slate-400")}>
-                                  {new Date(n.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                  {/* H7 fix: toJSDate handles Firestore Timestamp objects. */}
+                                  {(() => { const nd = toJSDate(n.timestamp); return nd ? nd.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''; })()}
                                 </p>
                               </div>
                             </div>
@@ -1996,18 +1991,26 @@ export default function App() {
                   {/* Recommendation Assessment Block */}
                   <div className="p-4 bg-emerald-500/[0.03] dark:bg-emerald-500/[0.02] rounded-xl border border-emerald-500/10 space-y-1.5">
                     <span className="text-[10px] font-mono font-bold tracking-widest text-emerald-500 uppercase block">Expert Recommendation Summary</span>
-                    <p className="text-xs text-slate-600 dark:text-white/70 leading-relaxed font-sans">
-                      {previewAnalysis.interpretation?.recommendation || 
-                        (previewAnalysis.interpretation?.status === 'normal' 
+                    <p className="text-xs text-slate-600 dark:text-white/70 leading-relaxed font-sans whitespace-pre-line">
+                      {/* C5 fix: read `recommendations` (plural array), not the
+                          non-existent `recommendation` (singular) field. */}
+                      {(() => {
+                        const recs = previewAnalysis.interpretation?.recommendations;
+                        if (Array.isArray(recs) && recs.length > 0) {
+                          return recs.map(r => `• ${r}`).join('\n');
+                        }
+                        return previewAnalysis.interpretation?.status === 'normal'
                           ? "This specimen indicates high concentration metrics and standard sperm morphology parameters aligning with optimal clinical ranges."
-                          : "Specimen demonstrates slight deviation from standard ranges. Consider specialized nutrition plans or repeated diagnostic collection in 30 days.")}
+                          : "Specimen demonstrates slight deviation from standard ranges. Consider specialized nutrition plans or repeated diagnostic collection in 30 days.";
+                      })()}
                     </p>
                   </div>
                 </div>
 
                 {/* Technical Meta Footer in Document */}
                 <div className="mt-8 pt-4 border-t border-slate-200 dark:border-white/10 flex justify-between items-center text-[8px] font-mono text-slate-400">
-                  <span>Certified by Abdelkader Atia / Lead Theriogenologist</span>
+                  {/* L6 fix: was hardcoded "Abdelkader Atia / Lead Theriogenologist". */}
+                  <span>Certified by {user?.displayName || user?.email || 'ATSA Lab'} / Lead Theriogenologist</span>
                   <span className="text-emerald-500 font-bold">ATSA CRYPTO VALIDATED</span>
                 </div>
               </div>
@@ -2192,3 +2195,32 @@ export default function App() {
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// H11 fix: LanguageSelect is now defined at MODULE SCOPE so React treats
+// it as a stable component type. It reads its own context via useLanguage(),
+// so the parent App no longer needs to pass props or recreate it.
+// ---------------------------------------------------------------------------
+const LanguageSelect = () => {
+  const { language, setLanguage } = useLanguage();
+  return (
+    <div className="flex items-center gap-1 p-1 bg-black/10 dark:bg-white/5 rounded-2xl border border-black/5 dark:border-white/[0.05]">
+      {(['en', 'fr', 'ar'] as const).map((lang) => (
+        <button
+          key={lang}
+          type="button"
+          onClick={() => setLanguage(lang)}
+          className={cn(
+            "px-3 py-1.5 text-[10px] font-black rounded-xl uppercase tracking-wider transition-all cursor-pointer",
+            language === lang
+              ? "bg-gradient-to-r from-emerald-500 to-teal-500 text-white shadow-lg shadow-emerald-500/15"
+              : "text-slate-400 hover:text-slate-900 dark:hover:text-white"
+          )}
+        >
+          {lang}
+        </button>
+      ))}
+    </div>
+  );
+};
+

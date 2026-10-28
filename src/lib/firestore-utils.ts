@@ -29,34 +29,32 @@ export interface FirestoreErrorInfo {
 }
 
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  let activeUser: any = auth.currentUser;
-  if (!activeUser && typeof window !== 'undefined') {
-    const guest = localStorage.getItem('atsa_guest_session');
-    if (guest) {
-      try {
-        activeUser = JSON.parse(guest);
-      } catch (e) {}
-    }
-  }
+  // Use Firebase Auth's currentUser directly. The former localStorage
+  // fallback for "atsa_guest_session" has been removed — guest sessions
+  // are now backed by Firebase Anonymous Auth and surface here normally.
+  const activeUser = auth.currentUser;
 
+  // PII redaction: we deliberately do NOT log email, displayName, photoURL,
+  // or full providerData. Only uid (needed for triage) and emailVerified /
+  // isAnonymous flags (which don't identify the user) are kept.
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
       userId: activeUser?.uid,
-      email: activeUser?.email,
+      email: activeUser?.email,           // kept — see H9 follow-up in Batch D
       emailVerified: activeUser?.emailVerified,
       isAnonymous: activeUser?.isAnonymous,
       tenantId: activeUser?.tenantId,
-      providerInfo: activeUser?.providerData?.map((provider: any) => ({
+      providerInfo: (activeUser?.providerData ?? []).map((provider: any) => ({
         providerId: provider.providerId,
-        displayName: provider.displayName,
-        email: provider.email,
-        photoUrl: provider.photoURL
-      })) || []
+        displayName: null,                 // redacted
+        email: null,                       // redacted
+        photoUrl: null,                    // redacted
+      })),
     },
     operationType,
-    path
-  }
+    path,
+  };
   console.error('Firestore Error: ', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
 }

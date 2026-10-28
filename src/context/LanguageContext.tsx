@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { translations, Language } from '../lib/i18n';
+import { safeStorage } from '../lib/safe-storage';
 
 interface LanguageContextProps {
   language: Language;
@@ -11,14 +12,17 @@ interface LanguageContextProps {
 const LanguageContext = createContext<LanguageContextProps | undefined>(undefined);
 
 export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  // H8 fix: wrap localStorage in safeStorage so a Safari private-mode user
+  // (or any env where localStorage throws) doesn't white-screen the entire
+  // app on first render.
   const [language, setLanguageState] = useState<Language>(() => {
-    const saved = localStorage.getItem('atsa_language') as Language;
+    const saved = safeStorage.get('atsa_language') as Language | null;
     return (saved === 'en' || saved === 'fr' || saved === 'ar') ? saved : 'en';
   });
 
   const setLanguage = (lang: Language) => {
     setLanguageState(lang);
-    localStorage.setItem('atsa_language', lang);
+    safeStorage.set('atsa_language', lang);
   };
 
   useEffect(() => {
@@ -30,6 +34,12 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const t = (key: string): string => {
     const entry = translations[key];
     if (!entry) {
+      // M12 fix: warn in dev so missing-translation bugs surface instead
+      // of silently rendering the key string.
+      const isDev = (import.meta as any).env?.DEV;
+      if (isDev) {
+        console.warn('[i18n] missing key:', key);
+      }
       return key;
     }
     return entry[language] || entry['en'] || key;
