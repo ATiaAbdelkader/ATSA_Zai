@@ -39,6 +39,7 @@ import {
 } from 'recharts';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../utils';
+import { toJSDate } from '../lib/date-utils';
 
 export interface DailyTrendRecord {
   key: string;            // YYYY-MM-DD
@@ -234,16 +235,11 @@ export const PerformanceTrendsChart: React.FC<PerformanceTrendsChartProps> = ({
       };
     }
 
+    // H7 fix: use toJSDate for both string and Firestore Timestamp inputs.
     analyses.forEach(analysis => {
       if (!analysis.timestamp) return;
-      let dateObj: Date;
-      if (typeof analysis.timestamp === 'string') {
-        dateObj = new Date(analysis.timestamp);
-      } else if (analysis.timestamp.toDate) {
-        dateObj = analysis.timestamp.toDate();
-      } else {
-        dateObj = new Date(analysis.timestamp);
-      }
+      const dateObj = toJSDate(analysis.timestamp);
+      if (!dateObj) return;
 
       const dateKey = dateObj.toISOString().split('T')[0];
       if (datesMap[dateKey]) {

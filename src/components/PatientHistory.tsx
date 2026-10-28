@@ -37,6 +37,8 @@ import { cn, SPECIES_PROFILES } from '../utils';
 import type { PatientHistory, HistoricalDataPoint } from '../types';
 import { db, auth } from '../firebase';
 import { collection, query, where, orderBy, onSnapshot } from 'firebase/firestore';
+import { toJSDate } from '../lib/date-utils';
+import { handleFirestoreError, OperationType } from '../lib/firestore-utils';
 import { GoogleGenAI } from "@google/genai";
 import { useLanguage } from '../context/LanguageContext';
 
@@ -45,38 +47,11 @@ interface PatientHistoryProps {
   theme?: 'light' | 'dark';
 }
 
-enum OperationType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  LIST = 'list',
-  GET = 'get',
-  WRITE = 'write',
-}
-
-function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  let activeUser: any = auth.currentUser;
-  if (!activeUser && typeof window !== 'undefined') {
-    const guest = localStorage.getItem('atsa_guest_session');
-    if (guest) {
-      try {
-        activeUser = JSON.parse(guest);
-      } catch (e) {}
-    }
-  }
-
-  const errInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: activeUser?.uid,
-      email: activeUser?.email,
-    },
-    operationType,
-    path
-  }
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
-}
+// H10 fix: removed the duplicate OperationType enum + handleFirestoreError
+// function that previously lived here. We now import both from
+// src/lib/firestore-utils.ts (the canonical version), so the two copies
+// can no longer drift out of sync. Also note the canonical version no
+// longer logs PII (H9 fix).
 
 export const PatientHistoryView: React.FC<PatientHistoryProps> = ({ onBack, theme = 'dark' }) => {
   const { t, dir } = useLanguage();
@@ -157,18 +132,9 @@ export const PatientHistoryView: React.FC<PatientHistoryProps> = ({ onBack, them
     }));
   };
 
-  const getActiveUser = () => {
-    if (auth.currentUser) return auth.currentUser;
-    const guest = localStorage.getItem('atsa_guest_session');
-    if (guest) {
-      try {
-        return JSON.parse(guest);
-      } catch (e) {
-        return null;
-      }
-    }
-    return null;
-  };
+  // Guest session is now a real Firebase Anonymous Auth user — no
+  // localStorage fallback is needed (or wanted for security).
+  const getActiveUser = () => auth.currentUser;
 
   useEffect(() => {
     const currentUser = getActiveUser();
@@ -194,8 +160,10 @@ export const PatientHistoryView: React.FC<PatientHistoryProps> = ({ onBack, them
 
       const data: HistoricalDataPoint[] = snapshot.docs.map(doc => {
         const d = doc.data();
+        // H7 fix: toJSDate handles Firestore Timestamp objects.
+        const jsDate = toJSDate(d.timestamp);
         return {
-          date: new Date(d.timestamp).toISOString().split('T')[0],
+          date: jsDate ? jsDate.toISOString().split('T')[0] : '',
           concentration: d.concentration || 0,
           motility: d.motility?.total || 0,
           progressive: d.motility?.progressive || 0,

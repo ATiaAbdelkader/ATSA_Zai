@@ -33,8 +33,8 @@ import {
   Cell 
 } from 'recharts';
 import { motion, AnimatePresence } from 'motion/react';
-import { cn } from '../utils';
-import type { SpermData } from '../types';
+import { cn } from '../../utils';
+import type { SpermData } from '../../types';
 
 export type TaxisStimulusType = 'chemotaxis' | 'thermotaxis' | 'rheotaxis';
 

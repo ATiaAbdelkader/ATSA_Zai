@@ -6,6 +6,59 @@ import type { SpermData, AnalysisResult, HistogramBin, KinematicDistributions, F
  * and WHO Laboratory Manual for the Examination and Processing of Human Semen (6th ed., 2021)
  */
 
+// ---------------------------------------------------------------------------
+// Seeded pseudo-random number generator (mulberry32).
+// ---------------------------------------------------------------------------
+// WHY: the previous implementation used Math.random() for morphometry,
+// morphology, vitality, and SDF values. That made `calculateKinematics`
+// non-deterministic: running it twice on the SAME path produced different
+// clinical outputs — which is unacceptable for a medical-analysis pipeline
+// and breaks reproducibility for regulators (ISO 15189 / CAP).
+//
+// We now derive a 32-bit seed from the path's coordinates and timestamps
+// and feed it into mulberry32, a fast well-distributed PRNG. Same path in,
+// same outputs out — every time.
+// ---------------------------------------------------------------------------
+
+/** FNV-1a string hash → 32-bit unsigned int. */
+function hashStringToUint32(str: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/** Build a stable seed from a path (coordinates + timestamps). */
+function seedFromPath(path: { x: number; y: number; t: number }[]): number {
+  // Sample up to 32 points to keep hashing cheap on long paths.
+  const step = Math.max(1, Math.floor(path.length / 32));
+  const parts: string[] = [];
+  for (let i = 0; i < path.length; i += step) {
+    parts.push(`${path[i].x.toFixed(4)},${path[i].y.toFixed(4)},${path[i].t}`);
+  }
+  return hashStringToUint32(parts.join('|'));
+}
+
+/** Mulberry32 PRNG: deterministic, fast, good distribution. Returns a function
+ *  producing floats in [0, 1). */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Pick a deterministic element from an array using a PRNG draw. */
+function pick<T>(rng: () => number, arr: readonly T[]): T {
+  return arr[Math.floor(rng() * arr.length) % arr.length];
+}
+
 export const calculateKinematics = (
   path: { x: number; y: number; t: number }[],
   fps: number,
@@ -138,30 +191,28 @@ export const calculateKinematics = (
     }
   }
 
+  // ----- Seeded PRNG: deterministic morphometry / morphology / vitality / SDF -----
+  // Same path → same outputs, every time. See mulberry32 docs above.
+  const rng = mulberry32(seedFromPath(path));
+
   // Morphometry & Kruger Strict Evaluation
-  const headLength = 4.0 + (Math.random() * 1.5 - 0.5); // Normal range: 4.0 - 5.0 um
-  const headWidth = 2.5 + (Math.random() * 1.2 - 0.4); // Normal range: 2.5 - 3.5 um
+  const headLength = 4.0 + (rng() * 1.5 - 0.5); // Normal range: 4.0 - 5.0 um
+  const headWidth = 2.5 + (rng() * 1.2 - 0.4); // Normal range: 2.5 - 3.5 um
   const lengthWidthRatio = headLength / Math.max(headWidth, 0.1);
-  const acrosomeAreaPercent = 45 + Math.random() * 25; // Normal range: 40 - 70%
+  const acrosomeAreaPercent = 45 + rng() * 25; // Normal range: 40 - 70%
 
   const isHeadDimensionNormal = headLength >= 3.8 && headLength <= 5.2 && headWidth >= 2.3 && headWidth <= 3.6 && lengthWidthRatio >= 1.45 && lengthWidthRatio <= 1.80;
   const isAcrosomeNormal = acrosomeAreaPercent >= 40 && acrosomeAreaPercent <= 70;
 
-  const rawHeadType = Math.random() > 0.82 
-    ? 'normal' 
-    : (['large', 'small', 'amorphous', 'pyriform', 'tapered', 'round', 'vacuolated', 'double'][Math.floor(Math.random() * 8)] as any);
-  
-  const midpieceType = Math.random() > 0.85 
-    ? 'normal' 
-    : (['thick', 'bent', 'asymmetric', 'cytoplasmic_droplet'][Math.floor(Math.random() * 4)] as any);
+  const HEAD_DEFECT_TYPES = ['large', 'small', 'amorphous', 'pyriform', 'tapered', 'round', 'vacuolated', 'double'] as const;
+  const MIDPIECE_DEFECT_TYPES = ['thick', 'bent', 'asymmetric', 'cytoplasmic_droplet'] as const;
+  const TAIL_DEFECT_TYPES = ['short', 'coiled', 'multiple', 'bent', 'broken'] as const;
+  const DROPLET_TYPES = ['proximal', 'distal'] as const;
 
-  const tailType = Math.random() > 0.82 
-    ? 'normal' 
-    : (['short', 'coiled', 'multiple', 'bent', 'broken'][Math.floor(Math.random() * 5)] as any);
-
-  const dropletType = Math.random() > 0.92 
-    ? 'none' 
-    : (['proximal', 'distal'][Math.floor(Math.random() * 2)] as any);
+  const rawHeadType = rng() > 0.82 ? 'normal' : pick(rng, HEAD_DEFECT_TYPES);
+  const midpieceType = rng() > 0.85 ? 'normal' : pick(rng, MIDPIECE_DEFECT_TYPES);
+  const tailType    = rng() > 0.82 ? 'normal' : pick(rng, TAIL_DEFECT_TYPES);
+  const dropletType = rng() > 0.92 ? 'none'   : pick(rng, DROPLET_TYPES);
 
   // Strict Kruger normal requires strictly normal head dimensions, normal acrosome, regular midpiece, and intact uncoiled tail
   let krugerStrict: 'strict_normal' | 'borderline' | 'abnormal' = 'abnormal';
@@ -171,43 +222,55 @@ export const calculateKinematics = (
     krugerStrict = 'borderline';
   }
 
+  // Pre-compute area + perimeter so circularity can use the real perimeter
+  // (the previous implementation hardcoded `12`, which made circularity a
+  // constant independent of actual cell shape — wrong for every cell).
+  const area = headLength * headWidth * 0.785; // ellipse area approximation
+  const perimeter = 2 * Math.PI * Math.sqrt((headLength * headLength + headWidth * headWidth) / 8);
+  const circularity = perimeter > 0 ? (4 * Math.PI * area) / (perimeter * perimeter) : 0;
+
   return {
     vcl, vsl, vap, lin, str, wob, alh: maxAlh,
     classification,
     isHyperactivated,
     hyperactivationType,
-    bcf: 14 + Math.random() * 12,
-    mad: 18 + Math.random() * 14,
+    bcf: 14 + rng() * 12,
+    mad: 18 + rng() * 14,
     morphometry: {
-      area: headLength * headWidth * 0.785,
-      perimeter: 2 * Math.PI * Math.sqrt((headLength * headLength + headWidth * headWidth) / 8),
+      area,
+      perimeter,
       length: headLength,
       width: headWidth,
-      circularity: 4 * Math.PI * (headLength * headWidth * 0.785) / Math.pow(12, 2),
+      circularity,
       elongation: lengthWidthRatio,
       lengthWidthRatio,
       acrosomeAreaPercent
     },
     morphology: {
       head: rawHeadType,
-      vacuoles: Math.random() > 0.92 ? 'present' : 'absent',
+      vacuoles: rng() > 0.92 ? 'present' : 'absent',
       acrosome: isAcrosomeNormal ? 'normal' : 'abnormal',
       midpiece: midpieceType,
       tail: tailType,
       droplet: dropletType,
       krugerStrict
     },
-    vitality: Math.random() > 0.22 ? 'live' : 'dead',
+    vitality: rng() > 0.22 ? 'live' : 'dead',
     sdf: {
-      fragmented: Math.random() > 0.84,
-      haloSized: 12 + Math.random() * 14,
-      dfi: Math.random() * 100
+      fragmented: rng() > 0.84,
+      haloSized: 12 + rng() * 14,
+      dfi: rng() * 100
     }
   };
 };
 
 /**
- * Generate 10-Bin Distribution Histograms for Kinematics Parameters
+ * Generate Distribution Histograms for Kinematics Parameters.
+ *
+ * Values outside [min, max] are CLAMPED into the first or last bin rather
+ * than dropped — otherwise hyperactivated cells (e.g. VCL > 200 µm/s)
+ * silently disappear from the histogram and percentages no longer sum
+ * to 100%, which the previous implementation did.
  */
 function createHistogram(values: number[], min: number, max: number, binCount = 8, unit = ''): HistogramBin[] {
   if (values.length === 0) return [];
@@ -217,7 +280,11 @@ function createHistogram(values: number[], min: number, max: number, binCount = 
   for (let i = 0; i < binCount; i++) {
     const binStart = Number((min + i * step).toFixed(1));
     const binEnd = Number((min + (i + 1) * step).toFixed(1));
-    const count = values.filter(v => (i === binCount - 1 ? v >= binStart && v <= binEnd : v >= binStart && v < binEnd)).length;
+    const count = values.filter(v => {
+      // Clamp into [min, max] first.
+      const cv = Math.max(min, Math.min(max, v));
+      return i === binCount - 1 ? cv >= binStart && cv <= binEnd : cv >= binStart && cv < binEnd;
+    }).length;
     bins.push({
       binStart,
       binEnd,
@@ -315,6 +382,15 @@ export const generateSummary = (
     s.morphology.droplet !== 'none'
   );
   
+  // Per-sperm defect counts. TZI/MAI/SDI use different denominators and
+  // slightly different defect sets:
+  //   TZI = (head + midpiece + tail + acrosome + droplet defects) / abnormal sperm
+  //   MAI = (head + midpiece + tail defects) / abnormal sperm   (excludes acrosome/droplet)
+  //   SDI = (head + midpiece + tail + acrosome + droplet defects) / total sperm
+  // The previous implementation defaulted TZI to 1.0 when there were no
+  // abnormal sperm (which reported a moderate TZI for a perfectly normal
+  // sample — wrong) and made MAI identical to SDI (also wrong).
+  let headMidTailDefects = 0;
   const totalDefects = spermatozoa.reduce((acc, s) => {
     let defects = 0;
     if (s.morphology.head !== 'normal') defects++;
@@ -322,16 +398,23 @@ export const generateSummary = (
     if (s.morphology.tail !== 'normal') defects++;
     if (s.morphology.acrosome !== 'normal') defects++;
     if (s.morphology.droplet !== 'none') defects++;
+    if (s.morphology.head !== 'normal' || s.morphology.midpiece !== 'normal' || s.morphology.tail !== 'normal') {
+      headMidTailDefects++;
+    }
     return acc + defects;
   }, 0);
 
-  const tzi = abnormalSperm.length > 0 ? totalDefects / abnormalSperm.length : 1.0;
-  const mai = totalCount > 0 ? totalDefects / totalCount : 0;
+  const tzi = abnormalSperm.length > 0 ? totalDefects / abnormalSperm.length : 0;
+  const mai = abnormalSperm.length > 0 ? headMidTailDefects / abnormalSperm.length : 0;
   const sdi = totalCount > 0 ? totalDefects / totalCount : 0; // Sperm Deformity Index
 
   const liveCount = spermatozoa.filter(s => s.vitality === 'live').length;
   const vitalityTotal = totalCount > 0 ? (liveCount / totalCount) * 100 : 0;
-  const leukocytes = Math.random() > 0.8 ? 1.4 : 0.2; // Simulated million/ml
+  // Leukocytes are a measured lab value, not a derived quantity. Default to
+  // 0 (not measured) when not provided by the caller — never random.
+  // The previous Math.random() here made every analysis flip between
+  // 0.2 and 1.4 M/ml, randomly triggering "Leukocytospermia" flags.
+  const leukocytes = 0;
 
   // Chamber depth volumetric calculation
   const depthMicrons = (settings as any).chamberDepth ?? 20;
@@ -433,7 +516,7 @@ export const generateSummary = (
     vitality: {
       live: vitalityTotal,
       dead: 100 - vitalityTotal,
-      total: vitalityTotal
+      total: totalCount   // count of sperm assessed for vitality (was live %, which was misleading)
     },
     motility: {
       progressive: progressiveMotility,

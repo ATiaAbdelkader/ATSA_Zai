@@ -138,7 +138,7 @@ export const SampleRegistration: React.FC<SampleRegistrationProps> = ({ isOpen, 
                   )}>
                     <Calendar className="w-3 h-3" /> {t('collectionTime')}
                   </label>
-                  <input 
+                  <input
                     required
                     type="datetime-local"
                     value={formData.collectionTime}
@@ -156,7 +156,7 @@ export const SampleRegistration: React.FC<SampleRegistrationProps> = ({ isOpen, 
                   )}>
                     {t('abstinenceDays')}
                   </label>
-                  <input 
+                  <input
                     type="number"
                     value={formData.abstinenceDays}
                     onChange={e => setFormData({...formData, abstinenceDays: e.target.value})}
@@ -166,6 +166,30 @@ export const SampleRegistration: React.FC<SampleRegistrationProps> = ({ isOpen, 
                     )}
                   />
                 </div>
+              </div>
+
+              {/* M16 fix: preparationMethod was in state but had no UI control,
+                  so every sample was silently registered with preparationMethod='Neat'.
+                  Now exposed as a proper <select>. */}
+              <div className="space-y-2">
+                <label className={cn(
+                  "text-[10px] font-bold uppercase tracking-widest flex items-center gap-2",
+                  theme === 'dark' ? "text-white/40" : "text-black/40"
+                )}>
+                  <Dna className="w-3 h-3" /> Preparation Method
+                </label>
+                <select
+                  value={formData.preparationMethod}
+                  onChange={e => setFormData({...formData, preparationMethod: e.target.value})}
+                  className={cn(
+                    "w-full border rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all appearance-none",
+                    theme === 'dark' ? "bg-black/40 border-white/10 text-white" : "bg-slate-50 border-black/10 text-slate-900"
+                  )}
+                >
+                  {['Neat', 'Washed', 'Swim-up', 'Density Gradient', 'Frozen-thawed', 'Cooled'].map(m => (
+                    <option key={m} value={m} className={theme === 'dark' ? "bg-[#0f0f0f]" : "bg-white"}>{m}</option>
+                  ))}
+                </select>
               </div>
 
               <div className="space-y-2">

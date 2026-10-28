@@ -13,7 +13,7 @@ import {
   Percent, 
   Printer
 } from 'lucide-react';
-import { cn } from '../utils';
+import { cn } from '../../utils';
 
 interface VeterinaryCryoCalculatorProps {
   initialVolume?: number;

@@ -30,8 +30,8 @@ import {
   Area
 } from 'recharts';
 import { motion, AnimatePresence } from 'motion/react';
-import { cn } from '../utils';
-import type { SpermData, AnalysisResult } from '../types';
+import { cn } from '../../utils';
+import type { SpermData, AnalysisResult } from '../../types';
 
 interface VisemBenchmarkValidatorProps {
   currentAnalysis?: AnalysisResult | null;

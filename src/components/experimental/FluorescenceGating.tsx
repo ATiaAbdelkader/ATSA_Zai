@@ -23,8 +23,8 @@ import {
   RefreshCw,
   Sun
 } from 'lucide-react';
-import { cn } from '../utils';
-import type { SpermData } from '../types';
+import { cn } from '../../utils';
+import type { SpermData } from '../../types';
 
 interface FluorescenceGatingProps {
   spermatozoa: SpermData[];

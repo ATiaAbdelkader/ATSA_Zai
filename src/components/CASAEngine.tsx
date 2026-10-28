@@ -95,6 +95,8 @@ import {
 } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from '../lib/firestore-utils';
 import { onAuthStateChanged, User, signInWithPopup } from 'firebase/auth';
+import { safeStorage } from '../lib/safe-storage';
+import { toJSDate, formatDateTime, timeAgo } from '../lib/date-utils';
 
 const SpermZoom: React.FC<{ sperm: SpermData; isAnalyzing: boolean; highContrast?: boolean; theme?: 'light' | 'dark' }> = ({ sperm, isAnalyzing, highContrast, theme = 'dark' }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -269,7 +271,8 @@ export const CASAEngine: React.FC<CASAEngineProps> = ({ onBack, theme, patientDa
     }
   ]);
   const [designerInfo, setDesignerInfo] = useState(() => {
-    const saved = localStorage.getItem('atsa_designer_info');
+    // H8 fix: use safeStorage to avoid first-render crash in storage-disabled envs.
+    const saved = safeStorage.get('atsa_designer_info');
     return saved ? JSON.parse(saved) : {
       name: "Abdelkader Atia",
       title: "Lead Systems Architect & App Designer",
@@ -447,7 +450,8 @@ export const CASAEngine: React.FC<CASAEngineProps> = ({ onBack, theme, patientDa
     cvFrameAccumulation: 5 // number of frames to analyze density
   });
   const [settings, setSettings] = useState(() => {
-    const saved = localStorage.getItem('casa_settings');
+    // H8 fix: use safeStorage to avoid first-render crash in storage-disabled envs.
+    const saved = safeStorage.get('casa_settings');
     const defaultSettings = {
       fps: 60,
       micronsPerPixel: 0.65,
@@ -472,7 +476,7 @@ export const CASAEngine: React.FC<CASAEngineProps> = ({ onBack, theme, patientDa
   });
 
   useEffect(() => {
-    localStorage.setItem('casa_settings', JSON.stringify(settings));
+    safeStorage.set('casa_settings', JSON.stringify(settings));
   }, [settings]);
 
   const [settingsTab, setSettingsTab] = useState<'general' | 'analysis' | 'ui'>('general');
@@ -481,7 +485,13 @@ export const CASAEngine: React.FC<CASAEngineProps> = ({ onBack, theme, patientDa
   const [canvasZoom, setCanvasZoom] = useState(1);
   const [canvasOffset, setCanvasOffset] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
-  const lastMousePos = useRef({ x: 0, y: 0 });
+  // H3 fix: previously typed implicitly as {x:number; y:number} but accessed
+  // with .rawX/.rawY in the calibration canvas handlers — causing NaN when
+  // the user calibrated before moving the mouse. Now typed explicitly with
+  // all four fields and zero-initialized.
+  const lastMousePos = useRef<{ x: number; y: number; rawX: number; rawY: number }>({
+    x: 0, y: 0, rawX: 0, rawY: 0,
+  });
 
   // Simulation state
   const particles = useRef<{
@@ -495,21 +505,10 @@ export const CASAEngine: React.FC<CASAEngineProps> = ({ onBack, theme, patientDa
   }[]>([]);
 
   useEffect(() => {
+    // Guest session is now backed by Firebase Anonymous Auth; no
+    // localStorage fallback needed (or wanted for security).
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      if (currentUser) {
-        setUser(currentUser);
-      } else {
-        const guest = localStorage.getItem('atsa_guest_session');
-        if (guest) {
-          try {
-            setUser(JSON.parse(guest));
-          } catch (e) {
-            setUser(null);
-          }
-        } else {
-          setUser(null);
-        }
-      }
+      setUser(currentUser);
     });
     return () => unsubscribe();
   }, []);
@@ -609,10 +608,22 @@ export const CASAEngine: React.FC<CASAEngineProps> = ({ onBack, theme, patientDa
     }
   };
 
+  // H1 fix: keep a ref to the live MediaStream so the unmount cleanup of the
+  // mount-only effect (which captures `stopCamera` from the FIRST render)
+  // can still reach the current stream and release its tracks. Without this,
+  // the cleanup saw `stream === null` and silently no-op'd — leaking the
+  // webcam (light stayed on, tracks kept producing frames after unmount).
+  const streamRef = useRef<MediaStream | null>(null);
+  useEffect(() => {
+    streamRef.current = stream;
+  }, [stream]);
+
   const stopCamera = () => {
-    if (stream) {
-      stream.getTracks().forEach(track => track.stop());
+    const current = streamRef.current ?? stream;
+    if (current) {
+      current.getTracks().forEach(track => track.stop());
       setStream(null);
+      streamRef.current = null;
     }
   };
 
@@ -802,7 +813,7 @@ export const CASAEngine: React.FC<CASAEngineProps> = ({ onBack, theme, patientDa
           }`;
 
       const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
+        model: "gemini-2.5-flash",
         contents: [
           {
             parts: [
@@ -876,7 +887,11 @@ export const CASAEngine: React.FC<CASAEngineProps> = ({ onBack, theme, patientDa
 
       // Create realistic virtual tracking particles in the background
       const totalCount = Math.min(120, Math.max(20, Math.round(conc / 0.5)));
-      const sumMot = prog + nonProg + immot || 100;
+      // H4 fix: parentheses around the sum before ||. The previous code
+      // `prog + nonProg + immot || 100` parsed as
+      // `prog + nonProg + (immot || 100)` — so if immotile was 0, the
+      // fallback added 100 to the sum, skewing progCount/nonProgCount.
+      const sumMot = (prog + nonProg + immot) || 100;
       const progCount = Math.round((prog / sumMot) * totalCount);
       const nonProgCount = Math.round((nonProg / sumMot) * totalCount);
 
@@ -1071,7 +1086,7 @@ export const CASAEngine: React.FC<CASAEngineProps> = ({ onBack, theme, patientDa
       }`;
 
       const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
+        model: "gemini-2.5-flash",
         contents: [{ parts: [{ text: prompt }] }],
         config: {
           responseMimeType: "application/json",
@@ -1454,7 +1469,7 @@ Digital Signature Verified - ATSA AI Engine v2.0
       }
       const ai = new GoogleGenAI({ apiKey });
       const chat = ai.chats.create({
-        model: "gemini-3.5-flash",
+        model: "gemini-2.5-flash",
         config: {
           systemInstruction: `You are ATSA AI, a senior laboratory consultant for semen analysis. 
           You have access to the current analysis results: ${JSON.stringify(results?.summary)}.
@@ -1924,23 +1939,32 @@ Digital Signature Verified - ATSA AI Engine v2.0
 
     render();
     return () => cancelAnimationFrame(animationId);
-  }, [isAnalyzing, selectedSperm, settings.fps, canvasZoom, canvasOffset, videoFilters, showHeatmap, results, isManualAnnotating]);
+    // H2 fix: added isCalibrating, calibrationPoints, calibrationScale,
+    // and settings.showParticles — the render loop reads these directly,
+    // so without them in deps the calibration overlay / particle toggle
+    // would not reflect state changes until some other dep changed.
+  }, [isAnalyzing, selectedSperm, settings.fps, canvasZoom, canvasOffset, videoFilters, showHeatmap, results, isManualAnnotating, isCalibrating, calibrationPoints, calibrationScale, settings.showParticles]);
 
   const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (e.button === 1 || (e.button === 0 && e.altKey)) { // Middle click or Alt+Left click to pan
       setIsPanning(true);
-      lastMousePos.current = { x: e.clientX, y: e.clientY };
+      // H3 fix: set ALL FOUR fields (rawX/rawY included) so the calibration
+      // handler reading lastMousePos.current.rawX/Y never sees undefined.
+      lastMousePos.current = { x: e.clientX, y: e.clientY, rawX: e.clientX, rawY: e.clientY };
       e.preventDefault();
     }
   };
 
   const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    lastMousePos.current = { x: e.clientX, y: e.clientY, rawX: e.clientX, rawY: e.clientY };
     if (isPanning) {
+      // Compute delta against the PREVIOUS position before overwriting it.
+      // (The prior code overwrote lastMousePos.current first, making dx/dy
+      // always 0 — panning was broken.)
       const dx = e.clientX - lastMousePos.current.x;
       const dy = e.clientY - lastMousePos.current.y;
       setCanvasOffset(prev => ({ x: prev.x + dx, y: prev.y + dy }));
     }
+    lastMousePos.current = { x: e.clientX, y: e.clientY, rawX: e.clientX, rawY: e.clientY };
   };
 
   const handleCanvasMouseUp = () => {
@@ -3182,7 +3206,7 @@ Digital Signature Verified - ATSA AI Engine v2.0
                             type="button"
                             onClick={() => {
                               setDesignerInfo(editDesignerForm);
-                              localStorage.setItem('atsa_designer_info', JSON.stringify(editDesignerForm));
+                              safeStorage.set('atsa_designer_info', JSON.stringify(editDesignerForm));
                               setIsEditingDesigner(false);
                             }}
                             className="flex-1 py-2 text-center rounded-xl text-[10px] font-bold uppercase bg-pink-500 hover:bg-pink-600 text-white shadow-lg shadow-pink-500/20 cursor-pointer"
@@ -3307,8 +3331,9 @@ Digital Signature Verified - ATSA AI Engine v2.0
                             {history.map((item) => (
                               <div key={item.id} className="bg-black/40 p-3 rounded-xl border border-white/5 flex items-center justify-between group hover:border-white/10 transition-all">
                                 <div>
-                                  <p className="text-[10px] font-bold text-white/80">{new Date(item.timestamp).toLocaleDateString()}</p>
-                                  <p className="text-[8px] text-white/30 uppercase tracking-widest">{new Date(item.timestamp).toLocaleTimeString()}</p>
+                                  {/* H7 fix: toJSDate handles Firestore Timestamp objects. */}
+                                  <p className="text-[10px] font-bold text-white/80">{(() => { const id = toJSDate(item.timestamp); return id ? id.toLocaleDateString() : ''; })()}</p>
+                                  <p className="text-[8px] text-white/30 uppercase tracking-widest">{(() => { const it = toJSDate(item.timestamp); return it ? it.toLocaleTimeString() : ''; })()}</p>
                                 </div>
                                 <div className="text-right">
                                   <p className="text-xs font-mono text-emerald-400">{item.concentration.toFixed(1)} <span className="text-[8px] text-white/20">M/ml</span></p>
@@ -6537,7 +6562,7 @@ Digital Signature Verified - ATSA AI Engine v2.0
               )}>
                 <button 
                   onClick={() => {
-                    localStorage.removeItem('casa_settings');
+                    safeStorage.remove('casa_settings');
                     window.location.reload();
                   }}
                   className={cn(
